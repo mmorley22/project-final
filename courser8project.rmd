@@ -1,0 +1,260 @@
+---
+title: "Using Machine Learning to Predict Weightlighting Performance"
+author: "Mary Morley"
+date: "May 18, 2015"
+output: html_document
+---
+
+Executive Summary
+
+Fitness trackers can be used to collect a large amount of data inexpensively. The purpose of this document is to use the data from fitness trackers to predict how well barbell were performed. The data comes from accelerometers placed on the belt, forearm, arm and dumbell of 6 participants. The six participants each performed barbell lifts correctly and then incorrectly in five different wavys. The data comes from the website (link) http://groupware.les.inf.puc-rio.br/har.[^1] 
+
+[^1]: Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+
+
+
+The data was cleaned by removing variables where the data was mostly missing, NA's, or division by zero. The numerical variables were pre-processed using principal component analysis. Then various machine learning techniques were tried. The most successful was the model-based prediction method linear discriminant analysis. The results had over a 98% accuracy on the training set, with slightly lower, but still over 98% on the test set. Decision tree method had much lower accuracy, and random forest methods took over 45 minutes on my computer.
+
+
+
+
+The first step is to read in the data and load required packages. Note the R-code and most results are suppressed in the main document for readability. All r-code can be found in the appendix.
+
+
+```{r, echo= FALSE, message = FALSE, results = FALSE}
+library(caret)
+library(rattle)
+library(klaR)
+library(combinat)
+library(rpart)
+url1 <-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(url1, destfile="train.csv", method = "curl")
+url2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(url2, destfile = "test.csv", method = "curl") 
+trainingread <- read.csv("train.csv")
+testingread <- read.csv("test.csv")
+d <- dim(trainingread)
+drow <- nrow(trainingread)
+v <- ncol(trainingread)
+```
+Method and Results
+
+There is a large amount of data, there are `r drow`  rows, and `r v` variables. First we need to split the data into a training and a test sets. A summary of the variables ( not shown here) shows that many of the variables are mostly "NA". These variables are removed to get a smaller training set.
+
+```{r,echo = FALSE} 
+
+# data from test.csv will not be used it does not contain the classe variable
+
+inTrain <- createDataPartition(y =trainingread$classe, p = 0.7,list = FALSE)
+
+training <- trainingread[inTrain,]
+testing <- trainingread[-inTrain,]
+# remove mostly NA variables
+countna <- numeric(ncol(training))
+n <- nrow(training)
+listna <- NULL
+for ( i in 1:ncol(training)) {
+countna[i] <- sum(is.na(training[,i]))
+if (countna[i]> 0.9*n) {
+listna <- c(i,listna)
+}
+}
+training2 <- subset(training[, -listna]) 
+rtr <- nrow(training)
+rtest <- nrow(testing)
+n <- ncol(training2)
+```
+The training set has `r rtr` rows, and the testing set as `r rtest` rows.
+
+```{r, echo = FALSE}
+# Get numerical variables
+listnum <- NULL
+countnum <- rep(0,ncol(training2))
+for ( i in 1:ncol(training2)) {
+  if(is.numeric(training2[,i])) {
+    countnum[i] <- 1 
+    listnum <- c(listnum, i)
+  } 
+}
+trainingnum <- training2[, listnum] 
+n <- ncol(trainingnum)
+# preprocess numerical variables with principle component analysis
+preProc <- preProcess(trainingnum, method ="pca")
+procesnum <- predict(preProc, trainingnum) 
+n2 <- ncol(procesnum)
+```
+
+There are now only `r n` variables. We continue preprocessing by separating out the numerical variables and reducing them with principle component analysis. This reduces the numerical variables from `r n` to `r n2`. 
+
+The factor variables are reduced by removing variables whose values are either mostly blank or mostly division by zero, and by removing the name variable. Then the numerical and factor variables are recombined.
+
+```{r, echo = FALSE}
+# get factor variables and remove mostly blank variables
+trainingfac <- training2[, -listnum] 
+testingfac <- testing2[,-listnum]
+countb <- rep(0, ncol(trainingfac))
+listb <- NULL
+for ( i in 1:ncol(trainingfac)) {
+  countb[i] <- sum (trainingfac[,i]=="") +sum( trainingfac[,i]=="#DIV/0!")
+  if (countb[i] > 0.8*nrow(trainingfac)) listb <- c(listb, i)
+}
+trainingfac2 <- trainingfac[,-listb]
+
+
+# remove user_name variable
+trainingfac2 <- trainingfac2[,-1]
+
+# create new list of variables to be used combining numeric and factor
+newtraining <- cbind(procesnum, trainingfac2)
+n <- ncol(newtraining)
+ro <- nrow(newtraining)
+```
+
+There are now only `r n ` predictor variables down from the original 159 predictor variables. The first method tried was decision tree-- the resuling prediction was not very accurate even on the training set, so it was not tried on the test set.  A random forest method was tried, but took over an hour on my computer, so that method was abandoned. Here are the results of the decision tree:
+
+
+```{r, echo = FALSE}
+# try tree prediction
+modFit <- train(classe ~ ., method = "rpart", data = newtraining)
+# modFit$finalModel
+# fancyRpartPlot(modFit$finalModel) 
+f <- predict(modFit, newtraining)
+confusionMatrix(f, newtraining$classe)
+```
+
+The results of the model based linear discriminat analysis method was much better:
+
+
+```{r, echo = FALSE}
+# try mdel prediction method with lda works much better
+modlda <- train(classe~., data = newtraining, method = "lda")
+plda <- predict(modlda, newtraining)
+confusionMatrix(plda, newtraining$classe)
+```
+
+The lda method uses bootstrapping to cross-validate. This is done with replacement, so the result over estimates the accuracy. The accuracy on the test set is expected to be less than 98.7%, but the 95% confidence interval for accuracy is between 98.5% and 98.9%. The next step is to try this on the test data. The variables that were removed in the trianing are removed in the test data, and the lda model created in the trianing is applied to the test data.
+
+
+```{r, echo = FALSE}
+# try the modell prediction method of the test data
+# first remove mostly NA variables
+testing2 <- subset(testing[, - listna])
+# subset numerical variables to use pca on them
+testingnum <- testing2[, listnum]
+testnum <- predict(preProc, testingnum)
+# subset factor variables and remove mostly blank variables for testing sets
+testingfac <- testing2[,-listnum]
+
+testingfac2 <- testingfac[,-listb]
+
+# remove name variable
+testingfac2 <- testingfac2[,-1]
+
+# combine all variables that will be used
+newtesting <- cbind(testnum, testingfac2)
+
+# try model prediction on first test set
+pldatest <- predict(modlda, newtesting)
+
+confusionMatrix(pldatest, newtesting$classe)
+```
+
+Note that the accuracy on the testing data is only slightly less than on the training data-- it is still over 98%.
+
+Appendix: R code
+
+```{r, eval = FALSE}
+## chunk 1
+ibrary(caret)
+library(rattle)
+library(klaR)
+library(combinat)
+library(rpart)
+url1 <-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(url1, destfile="train.csv", method = "curl")
+url2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(url2, destfile = "test.csv", method = "curl") 
+trainingread <- read.csv("train.csv")
+testingread <- read.csv("test.csv")
+d <- dim(trainingread)
+drow <- nrow(trainingread)
+v <- ncol(trainingread)
+# chunk 2
+# data from test.csv will not be used it does not contain the classe variable
+
+inTrain <- createDataPartition(y =trainingread$classe, p = 0.7,list = FALSE)
+
+training <- trainingread[inTrain,]
+testing <- trainingread[-inTrain,]
+# remove mostly NA variables
+countna <- numeric(ncol(training))
+n <- nrow(training)
+listna <- NULL
+for ( i in 1:ncol(training)) {
+  countna[i] <- sum(is.na(training[,i]))
+  if (countna[i]> 0.9*n) {
+    listna <- c(i,listna)
+    }
+  }
+training2 <- subset(training[, -listna]) 
+rtr <- nrow(training)
+rtest <- nrow(testing)
+n <- ncol(training2) 
+# chunk 3
+# Get numerical variables
+listnum <- NULL
+countnum <- rep(0,ncol(training2))
+for ( i in 1:ncol(training2)) {
+  if(is.numeric(training2[,i])) {
+    countnum[i] <- 1 
+    listnum <- c(listnum, i)
+  } 
+}
+trainingnum <- training2[, listnum] 
+n <- ncol(trainingnum)
+# preprocess numerical variables with principle component analysis
+  preProc <- preProcess(trainingnum, method ="pca")
+  procesnum <- predict(preProc, trainingnum) 
+  n2 <- ncol(procesnum)
+
+# chunk 4
+
+# get factor variables and remove mostly blank variables
+trainingfac <- training2[, -listnum] 
+testingfac <- testing2[,-listnum]
+countb <- rep(0, ncol(trainingfac))
+listb <- NULL
+for ( i in 1:ncol(trainingfac)) {
+  countb[i] <- sum (trainingfac[,i]=="") +sum( trainingfac[,i]=="#DIV/0!")
+  if (countb[i] > 0.8*nrow(trainingfac)) listb <- c(listb, i)
+}
+trainingfac2 <- trainingfac[,-listb]
+
+
+# remove user_name variable
+trainingfac2 <- trainingfac2[,-1]
+
+# create new list of variables to be used combining numeric and factor
+newtraining <- cbind(procesnum, trainingfac2)
+n <- ncol(newtraining)
+ro <- nrow(newtraining)
+
+# chunk 5
+
+# try tree prediction
+modFit <- train(classe ~ ., method = "rpart", data = newtraining)
+# modFit$finalModel
+# fancyRpartPlot(modFit$finalModel) 
+f <- predict(modFit, newtraining)
+confusionMatrix(f, newtraining$classe)
+
+# chunk 6
+
+# try tree prediction
+modFit <- train(classe ~ ., method = "rpart", data = newtraining)
+# modFit$finalModel
+# fancyRpartPlot(modFit$finalModel) 
+f <- predict(modFit, newtraining)
+confusionMatrix(f, newtraining$classe)
+```
